@@ -1,0 +1,7 @@
+version: "1"
+name: Hello Workflow
+steps:
+  - name: Print hello
+    run: echo "Hello from Flowrun"
+  - name: List files
+    run: ls

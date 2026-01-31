@@ -1,0 +1,23 @@
+name: Parallel Workflow
+steps:
+  - name: Init
+    run: echo "Initializing"
+
+  - name: Parallel Task 1
+    run: echo "Task 1 running"; sleep 1
+    needs: [Init]
+    parallel: true
+
+  - name: Parallel Task 2
+    run: echo "Task 2 running"; sleep 1
+    needs: [Init]
+    parallel: true
+
+  - name: Parallel Task 3
+    run: echo "Task 3 running"; sleep 1
+    needs: [Init]
+    parallel: true
+
+  - name: Finalize
+    run: echo "Done"
+    needs: [Parallel Task 1, Parallel Task 2, Parallel Task 3]

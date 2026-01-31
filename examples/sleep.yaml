@@ -1,0 +1,5 @@
+version: "1"
+name: Sleep Test
+steps:
+  - name: Sleep
+    run: sleep 10

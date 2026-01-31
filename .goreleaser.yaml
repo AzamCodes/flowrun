@@ -1,0 +1,66 @@
+version: 2
+
+project_name: flowrun
+
+builds:
+  - id: flowrun-cli
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    binary: flowrun
+    ldflags:
+      - -s -w -X flowrun/cmd.Version={{.Version}}
+
+  - id: flowrun-gui
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    binary: flowrun-gui
+    flags:
+      - -tags=gui
+    ldflags:
+      - -s -w -X flowrun/cmd.Version={{.Version}}
+    # Ignoring GUI cross-compilation errors for now on simple CI
+    ignore:
+      - goos: windows
+      - goos: darwin
+      - goos: linux
+        goarch: arm64
+
+archives:
+  - format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    format_overrides:
+    - goos: windows
+      format: zip
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'

@@ -1,0 +1,26 @@
+name: Demo Workflow
+env:
+  GLOBAL_VAR: "Hello from Global"
+
+steps:
+  - name: Basic Step
+    run: echo "Starting execution..."
+
+  - name: Environment Variables
+    run: 'echo "Global: $GLOBAL_VAR, Local: $LOCAL_VAR"'
+    env:
+      LOCAL_VAR: "Hello from Step"
+
+  - name: Timeout Success
+    run: echo "Sleeping for 1s..." && sleep 1
+    timeout: 2s
+
+  - name: Retry Mechanism
+    # This command succeeds on the terminal if random exit code logic was here, 
+    # but for demo we just show syntax.
+    run: echo "Trying..."
+    retry: 3
+
+  - name: Tagged Step
+    run: echo "This runs only if tasks selector includes 'deploy'"
+    tags: [deploy]
