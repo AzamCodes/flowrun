@@ -20,6 +20,8 @@ var (
 	envVars    []string
 	envFile    string
 	maxParallel int
+	useCache    bool
+	force       bool
 )
 
 // runCmd represents the run command
@@ -124,6 +126,8 @@ Examples:
 			DryRun:      dryRun,
 			Env:         envMap,
 			MaxParallel: maxParallel,
+			UseCache:    useCache,
+			Force:       force,
 		}
 
 		if err := executor.Execute(ctx, wf, opts); err != nil {
@@ -142,6 +146,8 @@ func init() {
 	runCmd.Flags().StringSliceVarP(&envVars, "env", "e", nil, "Set environment variables (KEY=VALUE)")
 	runCmd.Flags().StringVar(&envFile, "env-file", "", "Load environment variables from file")
 	runCmd.Flags().IntVar(&maxParallel, "max-parallel", 0, "Max parallel steps (default: CPU cores)")
+	runCmd.Flags().BoolVar(&useCache, "use-cache", false, "Use cached results if available")
+	runCmd.Flags().BoolVar(&force, "force", false, "Force execution even if cached")
 }
 
 func loadEnvFile(path string) (map[string]string, error) {

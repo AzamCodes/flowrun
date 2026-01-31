@@ -22,7 +22,7 @@ go install flowrun
 ```
 
 ### Pre-built Binaries
-Download the latest release for Linux, macOS, or Windows from the [Releases](https://github.com/yourusername/flowrun/releases) page.
+Download the latest release for Linux, macOS, or Windows from the [Releases](https://github.com/AzamCodes/flowrun/releases) page.
 
 ## Quick Start
 
@@ -75,6 +75,15 @@ Flowrun supports Directed Acyclic Graphs (DAGs).
 - **Dependencies**: Use `needs: [Step Name]` to enforce order. If a dependency fails, the step is skipped.
 - **Parallelism**: Set `parallel: true` on steps. They will run concurrently up to the limit set by `--max-parallel` (default: CPU cores) once their dependencies are met.
 
+## Caching
+
+Flowrun implements intelligent caching to save time by not re-executing steps that haven't changed.
+
+- **Enable**: Use `--use-cache` to enable caching.
+- **Key Calculation**: Hashes are derived from the step command, environment variables, timeout, retry settings, and the hashes of all dependencies.
+- **Storage**: Cache metadata is stored in `.flowrun_cache.json`.
+- **Invalidation**: Change any of the above factors, and the step re-runs. Use `--force` to bypass.
+
 ## CLI Reference
 
 ### `flowrun run <file>`
@@ -82,6 +91,8 @@ Flowrun supports Directed Acyclic Graphs (DAGs).
 | Flag | Description |
 |------|-------------|
 | `--max-parallel`| Maximum number of parallel steps (default: NumCPU). |
+| `--use-cache` | Use cached results if available. |
+| `--force` | Force execution even if cached. |
 | `--dry-run` | Print execution plan without running commands. |
 | `--steps` | Comma-separated list of steps to explicitly run. |
 | `--tags` | Comma-separated list of tags to run. |

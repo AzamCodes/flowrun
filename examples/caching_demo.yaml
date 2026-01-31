@@ -1,0 +1,22 @@
+name: Caching Demo
+env:
+  SLEEP: 1
+
+steps:
+  - name: Expensive Build
+    run: echo "Compiling..." && sleep 2
+    parallel: true
+
+  - name: Expensive Test
+    run: echo "Testing..." && sleep 2
+    needs: [Expensive Build]
+    parallel: true
+
+  - name: Deploy
+    run: echo "Deploying..." && sleep 1
+    needs: [Expensive Test]
+
+# Instructions:
+# 1. Run: flowrun run examples/caching_demo.yaml --use-cache (Takes ~5s)
+# 2. Run: flowrun run examples/caching_demo.yaml --use-cache (Takes ~5ms)
+# 3. Modify 'SLEEP' env or step command, run again (Takes ~5s for affected steps)

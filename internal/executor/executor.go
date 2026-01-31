@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"flowrun/internal/cache"
 	"flowrun/internal/logger"
 	"flowrun/internal/workflow"
 )
@@ -22,6 +23,8 @@ type Options struct {
 	DryRun      bool
 	Env         map[string]string
 	MaxParallel int
+	UseCache    bool
+	Force       bool
 }
 
 // Execute runs the workflow steps sequentially.
@@ -36,6 +39,7 @@ const (
 	statusSuccess
 	statusFailed
 	statusSkipped
+	statusCached
 )
 
 type executionState struct {
@@ -57,7 +61,7 @@ func newExecutionState(steps []workflow.Step) *executionState {
 
 // Execute runs the workflow steps based on dependencies.
 func Execute(ctx context.Context, wf *workflow.Workflow, opts *Options) error {
-	logger.Info("Workflow execution started", "workflow", wf.Name, "parallelism", opts.MaxParallel, "fail_fast", wf.IsFailFast())
+	logger.Info("Workflow execution started", "workflow", wf.Name, "parallelism", opts.MaxParallel, "fail_fast", wf.IsFailFast(), "use_cache", opts.UseCache)
 	startTime := time.Now()
 
 	// 1. Merge global environment variables
@@ -70,6 +74,20 @@ func Execute(ctx context.Context, wf *workflow.Workflow, opts *Options) error {
 
 	state := newExecutionState(wf.Steps)
 	
+	// Initialize Cache Store
+	var cacheStore *cache.Store
+	if opts.UseCache {
+		var err error
+		cacheStore, err = cache.New("")
+		if err != nil {
+			logger.Warn("Failed to load cache, proceeding without cache", "error", err)
+		}
+	}
+	
+	// Track hashes of steps to support dependency hashing
+	stepHashes := make(map[string]string)
+	var hashesMu sync.RWMutex
+
 	// Create a context that can be cancelled on first failure if fail-fast is enabled
 	execCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -87,11 +105,7 @@ func Execute(ctx context.Context, wf *workflow.Workflow, opts *Options) error {
 	// Errors channel
 	errChan := make(chan error, len(wf.Steps))
 
-	// Main scheduler loop
-	// We need to launch steps as they become ready
-	// This is a simplified scheduler: it iterates and launches tasks.
-	
-	// Build map for easy access
+	// Map for easy access
 	stepMap := make(map[string]workflow.Step)
 	for _, s := range wf.Steps {
 		stepMap[s.Name] = s
@@ -130,8 +144,9 @@ func Execute(ctx context.Context, wf *workflow.Workflow, opts *Options) error {
 
 			for _, depName := range s.Needs {
 				depStatus := state.status[depName]
-				if depStatus != statusSuccess {
+				if depStatus != statusSuccess && depStatus != statusCached {
 					ready = false
+					// Cached steps count as success for dependency purposes
 					if depStatus == statusFailed || depStatus == statusSkipped {
 						failedDep = true
 					}
@@ -176,7 +191,7 @@ func Execute(ctx context.Context, wf *workflow.Workflow, opts *Options) error {
 						wg.Add(1)
 						go func(step workflow.Step) {
 							defer wg.Done()
-							runStepWrapper(execCtx, step, opts, globalEnv, state, stepMap, sem, errChan, wf.IsFailFast(), cancel)
+							runStepWrapper(execCtx, wf.Name, step, opts, globalEnv, state, stepMap, sem, errChan, wf.IsFailFast(), cancel, cacheStore, stepHashes, &hashesMu)
 						}(s)
 						launched = true
 						progress = true
@@ -188,7 +203,7 @@ func Execute(ctx context.Context, wf *workflow.Workflow, opts *Options) error {
 					wg.Add(1)
 					go func(step workflow.Step) {
 						defer wg.Done()
-						runStepWrapper(execCtx, step, opts, globalEnv, state, stepMap, sem, errChan, wf.IsFailFast(), cancel)
+						runStepWrapper(execCtx, wf.Name, step, opts, globalEnv, state, stepMap, sem, errChan, wf.IsFailFast(), cancel, cacheStore, stepHashes, &hashesMu)
 					}(s)
 					launched = true
 					progress = true
@@ -207,9 +222,6 @@ func Execute(ctx context.Context, wf *workflow.Workflow, opts *Options) error {
 		state.mu.Unlock()
 	}
 
-	// wg.Wait() might not be needed if allDone is true, but good for safety if we used it.
-	// Actually allDone implies status is terminal, so steps are done.
-	// But let's wait to ensure wrappers exit.
 	wg.Wait()
 	close(errChan)
 
@@ -233,7 +245,7 @@ func Execute(ctx context.Context, wf *workflow.Workflow, opts *Options) error {
 	return nil
 }
 
-func runStepWrapper(ctx context.Context, step workflow.Step, opts *Options, globalEnv []string, state *executionState, stepMap map[string]workflow.Step, sem chan struct{}, errChan chan error, failFast bool, cancel context.CancelFunc) {
+func runStepWrapper(ctx context.Context, wfName string, step workflow.Step, opts *Options, globalEnv []string, state *executionState, stepMap map[string]workflow.Step, sem chan struct{}, errChan chan error, failFast bool, cancel context.CancelFunc, cacheStore *cache.Store, stepHashes map[string]string, hashesMu *sync.RWMutex) {
 	// Acquire semaphore
 	sem <- struct{}{}
 	defer func() { <-sem }()
@@ -261,9 +273,44 @@ func runStepWrapper(ctx context.Context, step workflow.Step, opts *Options, glob
 		return
 	}
 
+	// Prepare environment and Cache Hash
+	stepEnv := mergeEnv(globalEnv, step.Env)
+	
+	var currentHash string
+	if cacheStore != nil {
+		// Collect dependency hashes
+		hashesMu.RLock()
+		depHashes := make(map[string]string)
+		for _, dep := range step.Needs {
+			depHashes[dep] = stepHashes[dep]
+		}
+		hashesMu.RUnlock()
+
+		currentHash = cache.ComputeHash(wfName, step, stepEnv, depHashes)
+
+		// Check Cache
+		if !opts.Force {
+			if entry, hit := cacheStore.Get(wfName, step.Name); hit {
+				if entry.Hash == currentHash && entry.ExitCode == 0 {
+					logger.Info("Cache Hit - Skipping step", "step", step.Name)
+					
+					state.mu.Lock()
+					state.status[step.Name] = statusCached
+					state.mu.Unlock()
+					
+					// Store hash for dependents
+					hashesMu.Lock()
+					stepHashes[step.Name] = currentHash
+					hashesMu.Unlock()
+					return
+				}
+			}
+		}
+	}
+
 	// Calculate index? We don't have linear index in DAG easily.
 	// Step Retry Logic
-	err := executeStepWithRetry(ctx, step, opts, globalEnv)
+	err := executeStepWithRetry(ctx, step, opts, stepEnv)
 	
 	state.mu.Lock()
 	if err != nil {
@@ -274,12 +321,33 @@ func runStepWrapper(ctx context.Context, step workflow.Step, opts *Options, glob
 		errChan <- err
 	} else {
 		state.status[step.Name] = statusSuccess
+		
+		// Update Cache on success
+		if cacheStore != nil && currentHash != "" {
+			cacheStore.Set(wfName, step.Name, currentHash, 0)
+			if err := cacheStore.Save(); err != nil {
+				logger.Warn("Failed to save cache", "error", err)
+			} else {
+				// Store hash for dependents
+				// Note: We need to do this outside of state lock to avoid deadlock scenarios?
+				// No, stepHashes has its own lock.
+				// But we are inside state lock currently.
+				// This is fine as hashesMu is leaf lock.
+			}
+		}
 	}
 	state.mu.Unlock()
+	
+	// Store hash for dependents (needs to happen even if not cached, if we computed it)
+	if cacheStore != nil && currentHash != "" && err == nil {
+		hashesMu.Lock()
+		stepHashes[step.Name] = currentHash
+		hashesMu.Unlock()
+	}
 }
 
-// executeStepWithRetry adapted for new signature
-func executeStepWithRetry(ctx context.Context, step workflow.Step, opts *Options, globalEnv []string) error {
+// executeStepWithRetry runs the step logic including timeouts and retries
+func executeStepWithRetry(ctx context.Context, step workflow.Step, opts *Options, env []string) error {
 	maxRetries := step.Retry
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		stepStart := time.Now()
@@ -296,8 +364,7 @@ func executeStepWithRetry(ctx context.Context, step workflow.Step, opts *Options
 			}
 		}
 
-		stepEnv := mergeEnv(globalEnv, step.Env)
-		err := executeStep(stepCtx, step, opts, stepEnv)
+		err := executeStep(stepCtx, step, opts, env)
 		duration := time.Since(stepStart)
 
 		if err == nil {
@@ -339,6 +406,8 @@ func printSummary(wf *workflow.Workflow, state *executionState) {
 			statusStr = "PENDING"
 		case statusRunning:
 			statusStr = "RUNNING"
+		case statusCached:
+			statusStr = "CACHED"
 		}
 		fmt.Printf("  %s: %s\n", step.Name, statusStr)
 	}
